@@ -3,5 +3,11 @@
   "identifier": "default",
   "description": "Capabilities for the main Geode window",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:default", "updater:default", "process:default"]
+  "permissions": [
+   "core:default",
+   "core:window:allow-destroy",
+   "dialog:default",
+   "updater:default",
+   "process:default"
+  ]
 }

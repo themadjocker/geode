@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="250" viewBox="0 0 1200 250" role="img" aria-labelledby="title desc">
+<title id="title">Geode setup commands</title><desc id="desc">PowerShell setup card: install locked dependencies with pnpm install frozen lockfile.</desc>
+<defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#24213f"/><stop offset="1" stop-color="#132e43"/></linearGradient><linearGradient id="accent"><stop stop-color="#8b7cff"/><stop offset="1" stop-color="#22c7d6"/></linearGradient></defs>
+<rect x="1" y="1" width="1198" height="248" rx="24" fill="url(#bg)" stroke="#5b62b5" stroke-width="2"/>
+<rect x="1" y="1" width="1198" height="14" rx="7" fill="url(#accent)"/>
+<circle cx="38" cy="43" r="7" fill="#ff6b6b"/><circle cx="62" cy="43" r="7" fill="#ffd166"/><circle cx="86" cy="43" r="7" fill="#06d6a0"/>
+<text x="120" y="50" font-family="Segoe UI,Arial,sans-serif" font-size="20" fill="#b8c5df">POWERSHELL · STEP 01</text>
+<text x="40" y="102" font-family="Segoe UI,Arial,sans-serif" font-size="29" font-weight="700" fill="#ffffff">📦 Install the locked dependencies</text>
+<rect x="35" y="128" width="1130" height="75" rx="12" fill="#101521" stroke="#38435e"/>
+<text x="58" y="174" font-family="Cascadia Code,Consolas,monospace" font-size="26" fill="#72e6d0">pnpm install --frozen-lockfile</text>
+<text x="40" y="228" font-family="Segoe UI,Arial,sans-serif" font-size="17" fill="#aab8d4">Run from the Geode repository root. Requires the project’s pinned pnpm toolchain.</text>
+</svg>

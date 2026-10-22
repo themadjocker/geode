@@ -26,3 +26,5 @@ compat-vault/
 .tauri-keys/
 # local update-server fixtures for desktop verification
 .update-test/
+
+.diagnostics/
