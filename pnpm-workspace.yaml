@@ -1,0 +1,9 @@
+
+packages:
+  - .calibration
+
+allowBuilds:
+  esbuild: true
+
+overrides:
+  '@lezer/common': 1.5.3

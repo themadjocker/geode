@@ -1,143 +1,31 @@
-# Geode Plugin API
+# Plugin development
 
-Geode is extensible through the same API its built-in features use.
+Geode has two plugin paths. They serve different contracts and should remain clearly separated.
 
-## Quick start (runtime registration)
+## Native Geode plugins
 
-Open the devtools console (or load a script) and run:
+Native plugins use Geode's own plugin API and are the recommended path for new Geode-specific integrations. External plugin files are loaded from the active vault at:
 
-```js
-window.geode.registerPlugin({
-  id: "my-plugin",
-  name: "My Plugin",
-  description: "Says hi in the status bar and adds a command",
-  version: "1.0.0",
-  onload(app) {
-    app.ui.setStatusBarItem("hello", "👋 hi");
-    app.commands.register({
-      id: "my-plugin:shout",
-      name: "My Plugin: shout active note",
-      callback: async () => {
-        const path = app.workspace.getActiveFile();
-        if (path) console.log(await app.vault.read(path));
-      },
-    });
-  },
-  onunload() {
-    // command/event/status-bar registrations made through `app` are
-    // automatically disposed when the plugin is disabled.
-  },
-});
-```
-
-The plugin immediately appears under **Settings → Plugins** with an enable/disable toggle
-(state persists across restarts).
-
-## The `AppHandle` surface
-
-| Member | What you get |
-|---|---|
-| `app.vault` | `read/modify/create/createFolder/rename/remove`, `getMarkdownFiles()`, `uniquePath()` |
-| `app.metadata` | `resolveLink`, `getBacklinks`, `getOutgoingLinks`, `getTagMap`, `getGraph` |
-| `app.workspace` | `openFile`, `openGraph`, `getActiveFile`, theme & layout controls |
-| `app.commands` | `register({ id, name, hotkey?, callback })` → shows up in the palette |
-| `app.events` | `on("file:modified" \| "active-file:changed" \| ...)` typed event bus |
-| `app.ui` | `setStatusBarItem(id, text)` / `removeStatusBarItem(id)` |
-
-Everything registered through the handle is tracked and torn down on disable —
-plugins cannot leak handlers.
-
-## Built-in plugins (source = examples)
-
-- `src/plugins/word-count.ts` — events + status bar
-- `src/plugins/daily-note.ts` — commands + vault writes
-- `src/plugins/random-note.ts` — navigation
-
-Built-ins are regular `GeodePlugin` objects compiled in; they have no special powers.
-
-## External plugins
-
-### File location
-
-Drop plain `.js` files into your vault at:
-
-```
+```text
 <vault>/.geode/plugins/*.js
 ```
 
-Each file is loaded at startup (and on every reload, see below). One file may register
-one or more plugins. External plugins show up under **Settings → Plugins → External**
-with the same enable/disable toggles as built-ins; toggle state persists across
-restarts and reloads.
+Start by inspecting the existing examples and the current plugin API in the source. Confirm the exact lifecycle and available methods from the implementation rather than copying an old example blindly. A plugin should handle unavailable context, clean up registrations and event listeners when unloaded, and avoid writing files unless the user-facing behavior requires it.
 
-### Authoring — two conventions
+## Obsidian-style plugins
 
-A plugin script runs with three injected values: `geode`, `module`, `exports`.
-Use **either** convention:
+The compatibility path adapts a growing subset of Obsidian APIs. See [Obsidian compatibility](OBSIDIAN-COMPAT.md) before depending on an API. Plugin loading does not imply full API parity.
 
-**1. `module.exports` (CommonJS-style, recommended)**
+## Quality and safety checklist
 
-```js
-// <vault>/.geode/plugins/hello-status.js
-module.exports = {
-  id: "hello-status",
-  name: "Hello Status",
-  description: "Status bar item + a greet command.",
-  version: "1.0.0",
-  onload(app) {
-    app.ui.setStatusBarItem("hello", "🔌 hello from external plugin");
-    app.commands.register({
-      id: "hello-status:greet",
-      name: "Hello plugin: greet",
-      callback: () => {
-        const path = app.workspace.getActiveFile();
-        const note = path ? path.split("/").pop().replace(/\.md$/, "") : "no note open";
-        app.ui.setStatusBarItem("hello", "🔌 hello, " + note + "!");
-      },
-    });
-  },
-  onunload() {
-    // registrations made through `app` are disposed automatically
-  },
-};
-```
+- Keep plugin identifiers stable and validate manifest data before loading.
+- Register commands, views, settings, and event listeners through the supported API.
+- Clean up timers, listeners, DOM handlers, and other resources during unload.
+- Treat vault paths and note content as untrusted input.
+- Never assume a filesystem write is safe because the request came from a plugin.
+- For compatibility changes, add a test that proves behavior beyond merely loading the plugin.
+- Do not commit private vaults, user data, or third-party plugin code without checking the license.
 
-`exports.default = { ... }` also works.
+## Testing
 
-**2. `geode.registerPlugin(...)`**
-
-```js
-geode.registerPlugin({
-  id: "my-plugin",
-  name: "My Plugin",
-  onload(app) {
-    /* same AppHandle as above */
-  },
-});
-```
-
-A valid plugin object needs a non-empty string `id`, a non-empty string `name` and an
-`onload` function (`description`/`version`/`onunload` optional). Invalid shapes are
-skipped with a `console.error`; an `id` that collides with an existing plugin
-(built-in or external) is rejected. A script that throws never affects other
-plugins — each file is evaluated in its own try/catch.
-
-A working sample ships in the demo vault: `demo-vault/.geode/plugins/hello-status.js`.
-
-### Reloading
-
-After adding or editing a plugin file, reload without restarting the app:
-
-- Command palette → **Reload external plugins** (`app:reload-plugins`), or
-- **Settings → Plugins → Reload external plugins** button.
-
-Reloading is idempotent: all previously loaded external plugins are unloaded
-(their commands, event handlers and status bar items torn down) and the
-`.geode/plugins` folder is re-scanned from scratch.
-
-### Trust model
-
-External plugins are **not sandboxed**. They are evaluated as ordinary JavaScript in
-the app and get the full `AppHandle` — the same trust model as Obsidian community
-plugins. These are local files inside your own vault: you own them, you put them
-there. Only add plugin files you have read or whose author you trust.
+Use browser mode for fast UI tests and a real Tauri desktop run for behavior that depends on the native filesystem, dialogs, updater, or WebView. A DOM screenshot can document appearance, but it cannot prove lifecycle cleanup, plugin API semantics, or safe file operations.

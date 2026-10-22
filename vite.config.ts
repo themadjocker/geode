@@ -1,9 +1,26 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { fileURLToPath } from "node:url";
+import { visualizer } from "rollup-plugin-visualizer";
+
+const bundleAnalysisEnabled = process.env.GEODE_BUNDLE_ANALYZE === "1";
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    ...(bundleAnalysisEnabled
+      ? [
+          visualizer({
+            filename: ".diagnostics/bundle-analysis.md",
+            template: "markdown",
+            gzipSize: true,
+            brotliSize: true,
+            open: false,
+            emitFile: false,
+          }),
+        ]
+      : []),
+  ],
   resolve: {
     alias: {
       "@core": fileURLToPath(new URL("./src/core", import.meta.url)),
@@ -16,6 +33,9 @@ export default defineConfig({
   server: {
     port: 1420,
     strictPort: true,
+    watch: {
+      ignored: ["**/src-tauri/**"],
+    },
   },
   build: {
     target: "es2022",

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="330" viewBox="0 0 1200 330" role="img" aria-labelledby="title desc">
+<title id="title">Choose how to run Geode</title><desc id="desc">Two command cards: pnpm dev for browser mode and pnpm tauri dev for native desktop mode.</desc>
+<defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#1c2440"/><stop offset="1" stop-color="#102d3b"/></linearGradient><linearGradient id="accent"><stop stop-color="#6d5ef7"/><stop offset="1" stop-color="#22c7d6"/></linearGradient></defs>
+<rect x="1" y="1" width="1198" height="328" rx="24" fill="url(#bg)" stroke="#5969b9" stroke-width="2"/><rect x="1" y="1" width="1198" height="12" rx="6" fill="url(#accent)"/>
+<text x="34" y="50" font-family="Segoe UI,Arial,sans-serif" font-size="22" font-weight="700" fill="#ffffff">🚀 STEP 02 · PICK YOUR MODE</text>
+<rect x="30" y="76" width="555" height="218" rx="18" fill="#151a2b" stroke="#6d5ef7" stroke-width="2"/>
+<text x="55" y="116" font-family="Segoe UI,Arial,sans-serif" font-size="25" font-weight="700" fill="#b9b0ff">🌐 Browser development</text>
+<rect x="52" y="138" width="511" height="61" rx="10" fill="#0b1020"/>
+<text x="70" y="177" font-family="Cascadia Code,Consolas,monospace" font-size="26" fill="#72e6d0">pnpm dev</text>
+<text x="55" y="229" font-family="Segoe UI,Arial,sans-serif" font-size="18" fill="#d3dbed">Vite · localhost:1420</text><text x="55" y="258" font-family="Segoe UI,Arial,sans-serif" font-size="16" fill="#9eaccb">In-memory vault for UI work and browser tests.</text>
+<rect x="615" y="76" width="555" height="218" rx="18" fill="#151a2b" stroke="#22c7d6" stroke-width="2"/>
+<text x="640" y="116" font-family="Segoe UI,Arial,sans-serif" font-size="25" font-weight="700" fill="#79e8ed">🪟 Native desktop</text>
+<rect x="637" y="138" width="511" height="61" rx="10" fill="#0b1020"/>
+<text x="655" y="177" font-family="Cascadia Code,Consolas,monospace" font-size="26" fill="#72e6d0">pnpm tauri dev</text>
+<text x="640" y="229" font-family="Segoe UI,Arial,sans-serif" font-size="18" fill="#d3dbed">Tauri 2 · Rust backend</text><text x="640" y="258" font-family="Segoe UI,Arial,sans-serif" font-size="16" fill="#9eaccb">Real filesystem integration; Rust prerequisites required.</text>
+<text x="35" y="316" font-family="Segoe UI,Arial,sans-serif" font-size="16" fill="#aab8d4">Use the bundled demo-vault/ to explore without opening a personal vault.</text>
+</svg>

@@ -20,19 +20,20 @@ Please read:
 - [README.md](README.md)
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- [docs/SECURITY.md](docs/SECURITY.md)
 - [docs/OBSIDIAN-COMPAT.md](docs/OBSIDIAN-COMPAT.md), if your change touches plugin compatibility
 
 ## Local setup
 
 ```sh
-npm install
-npm run dev
+pnpm install
+pnpm dev
 ```
 
 For desktop development:
 
 ```sh
-npm run tauri dev
+pnpm tauri dev
 ```
 
 ## Required checks
@@ -40,8 +41,8 @@ npm run tauri dev
 Before submitting a PR, run at least:
 
 ```sh
-npm run typecheck
-npm run build
+pnpm typecheck
+pnpm build
 ```
 
 If you touch a feature with an existing calibration script, run that script too. For example:

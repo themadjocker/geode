@@ -1,15 +1,13 @@
 /**
- * Obsidian plugin compatibility loader (T0) — discovers and runs plugins from
- * `<vault>/.obsidian/plugins/`. Idempotent like PluginManager.loadExternal:
- * previously loaded obsidian records are unloaded first.
+ * Obsidian plugin compatibility loader.
  *
- * Pipeline (ARCHITECTURE.md "Round 4 additions" + API-REFERENCE area 6):
- *   discover -> validate manifest -> evaluate main.js as CommonJS with the
- *   host require map -> resolve ctor (exports.default ?? module.exports) ->
- *   wrap as a GeodePlugin record -> register(wrapper, "obsidian", { enabled,
- *   persistEnabled }) mirroring community-plugins.json. styles.css is injected
- *   per plugin on enable and removed on disable. Per-plugin failures isolate.
+ * Discovers plugins installed in a vault, checks their manifests, evaluates
+ * their `main.js` bundles through Geode's compatibility require map, and
+ * registers them with the host plugin manager. It also keeps enabled state,
+ * adapts a few legacy APIs, and publishes a report for the Settings UI.
  */
+
+// -------------------- Imports and shared types --------------------
 import * as cmAutocomplete from "@codemirror/autocomplete";
 import * as cmCommands from "@codemirror/commands";
 import * as cmLanguage from "@codemirror/language";
@@ -32,27 +30,13 @@ import { pathShim } from "./path-shim";
 import type { Plugin as ObsidianPlugin, PluginManifest } from "./plugin";
 import { apiVersion, moment, semverCompare } from "./util";
 
-/* ---------------- host require map ---------------- */
+// -------------------- Obsidian API compatibility --------------------
 
 /**
- * `obsidian` resolves to the shim; @codemirror/* and @lezer/highlight resolve
- * to the HOST instances (instanceof across plugin/host must work); `path` is
- * a tiny posix string shim (plugins require it at evaluate time). Anything
- * else throws — the loader records it as the plugin's failure reason.
+ * Most of Geode's Obsidian API shim can be shared directly with plugins.
+ * These selected base classes need ES5-callable wrappers because some older
+ * plugins transpile inheritance to `Base.apply(this)` instead of `super()`.
  */
-// R258: plugins compiled to ES5 with tslib inherit via `Base.apply(this)`, which the
-// shim's ES6 base classes reject. Hand plugins ES5-callable wrappers of the extendable
-// bases (the shim's own internals + index.ts keep the raw ES6 classes). ES6-target
-// plugins (super()/new) are unaffected — the Proxy forwards [[Construct]] transparently.
-//
-// ONLY throwaway-safe bases are wrapped (see es5compat.ts): field-init (Plugin/Component/
-// MarkdownRenderChild/PluginSettingTab) and detached-DOM-in-fields (View/ItemView/FileView).
-// The suggest/modal families (Modal/SuggestModal/FuzzySuggestModal/EditorSuggest/
-// AbstractInputSuggest) bind `this`-capturing listeners in their constructors, which the
-// throwaway-harvest cannot copy correctly — they are deliberately left UNwrapped, so an
-// ES5/tslib plugin extending them hard-fails to load with a clear, getLastError-surfaced
-// error instead of silently loading a broken instance. (Future round: defer their ctor
-// listener-registration so they become throwaway-safe too.)
 const obsidianForPlugins = {
   ...obsidianModule,
   Component: es5Callable(obsidianModule.Component),
@@ -64,16 +48,33 @@ const obsidianForPlugins = {
   FileView: es5Callable(obsidianModule.FileView),
 };
 
-// R264: newer @codemirror/language dropped the legacy `tokenClassNodeProp` export, but plugins
-// still read it — Dataview's inline-query ViewPlugin does `node.type.prop(language.tokenClassNodeProp)`
-// to detect inline-code; an undefined arg crashes `NodeType.prop` ("reading 'id'"). Re-expose a real
-// (but unset) NodeProp so the call returns undefined gracefully (Geode's markdown nodes don't carry it
-// → inline queries still render in READING view, just not via this editor token-class path).
+// -------------------- CodeMirror compatibility --------------------
+
+/**
+ * Older Obsidian plugins may expect `tokenClassNodeProp`, which newer
+ * CodeMirror versions no longer export. `Reflect.get` checks for the legacy
+ * property at runtime without making the bundler resolve a missing export.
+ * If it is absent, provide a real but unset NodeProp so calls such as
+ * `node.type.prop(...)` remain safe. This fallback does not restore the old
+ * token-class styling behavior for Geode's CodeMirror 6 editor.
+ */
+const legacyTokenClassNodeProp = Reflect.get(
+  cmLanguage,
+  "tokenClassNodeProp",
+);
+
 const cmLanguageForPlugins = {
   ...cmLanguage,
-  tokenClassNodeProp: (cmLanguage as { tokenClassNodeProp?: unknown }).tokenClassNodeProp ?? new NodeProp(),
+  tokenClassNodeProp: legacyTokenClassNodeProp ?? new NodeProp(),
 };
 
+// -------------------- Controlled plugin module resolution --------------------
+
+/**
+ * Modules exposed to a plugin's `require()` call. Keeping this map explicit
+ * makes the compatibility surface visible and avoids resolving arbitrary
+ * package names from a plugin bundle.
+ */
 const HOST_MODULES: Record<string, unknown> = {
   obsidian: obsidianForPlugins,
   path: pathShim,
@@ -86,16 +87,22 @@ const HOST_MODULES: Record<string, unknown> = {
   "@lezer/highlight": lezerHighlight,
 };
 
+/** Resolve one of the compatibility modules listed in HOST_MODULES. */
 function hostRequire(id: string): unknown {
   const mod = HOST_MODULES[id];
   if (mod === undefined) throw new Error(`module not available in Geode: ${id}`);
   return mod;
 }
 
-/* ---------------- community-plugins.json (enabled state) ---------------- */
+// -------------------- Persisted community-plugin state --------------------
 
+/** Vault config file containing the IDs the user has enabled. */
 const COMMUNITY_PLUGINS = "community-plugins.json";
 
+/**
+ * Read enabled plugin IDs from the vault. Missing, unreadable, or malformed
+ * config is treated as an empty enabled list so plugin loading can continue.
+ */
 async function readEnabledIds(vault: Vault): Promise<string[]> {
   try {
     const raw = await vault.adapter.readConfig(COMMUNITY_PLUGINS);
@@ -103,14 +110,21 @@ async function readEnabledIds(vault: Vault): Promise<string[]> {
     const parsed: unknown = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : [];
   } catch (err) {
-    console.warn(`[obsidian-compat] failed to read ${COMMUNITY_PLUGINS}`, err);
+    console.error(`[obsidian-compat] failed to parse ${COMMUNITY_PLUGINS}`, err);
     return [];
   }
 }
 
-/** Serialized read-modify-write preserving unknown ids and their order. */
+/**
+ * Serialize read-modify-write operations. Without this promise chain, two fast
+ * enable/disable actions could read the same old list and overwrite each other.
+ */
 let persistChain: Promise<void> = Promise.resolve();
 
+/**
+ * Persist one plugin's enabled state while preserving other IDs and their
+ * order. If the file is unreadable or invalid, the next write rebuilds it.
+ */
 function persistEnabledId(vault: Vault, id: string, enabled: boolean): void {
   persistChain = persistChain
     .then(async () => {
@@ -121,8 +135,8 @@ function persistEnabledId(vault: Vault, id: string, enabled: boolean): void {
           const parsed: unknown = JSON.parse(raw);
           if (Array.isArray(parsed)) list = parsed;
         }
-      } catch {
-        /* corrupted file — rewrite from scratch */
+      } catch (err) {
+        console.error(`[obsidian-compat] failed to parse ${COMMUNITY_PLUGINS}`, err);
       }
       const next = enabled
         ? list.includes(id)
@@ -136,46 +150,46 @@ function persistEnabledId(vault: Vault, id: string, enabled: boolean): void {
     });
 }
 
-/* ---------------- manifest validation ---------------- */
+// -------------------- Manifest validation helpers --------------------
 
+/** Manifest shape parsed from plugin-provided JSON, before validation. */
 interface RawManifest extends Partial<PluginManifest> {
   id?: string;
   name?: string;
   version?: string;
 }
 
+/** Narrow unknown manifest values to non-empty strings. */
 function isNonEmptyString(v: unknown): v is string {
   return typeof v === "string" && v.trim().length > 0;
 }
 
-/* ---------------- per-round state (idempotent reloads) ---------------- */
+// -------------------- Loader lifecycle and status reporting --------------------
 
+/** Context and plugin IDs from the previous load, cleaned up before a reload. */
 let previousContext: CompatContext | null = null;
 let loadedIds: string[] = [];
 
+/** Outcome recorded for each discovered plugin and shown to the user. */
 export interface ObsidianPluginReport {
   id: string;
   status: "enabled" | "disabled" | "failed" | "skipped";
   detail?: string;
-  /** set when manifest.minAppVersion exceeds the shim's apiVersion */
   minAppWarning?: string;
 }
 
-/**
- * Last load report — SettingsModal renders failed/skipped entries (with their
- * failure reason) and minAppVersion warnings from here.
- */
+/** Reactive snapshot of the latest load results. */
 export const obsidianLoadReport = new Store<ReadonlyArray<ObsidianPluginReport>>([]);
 
-/* ---------------- the frozen entry point ---------------- */
-
 /**
- * Serialized via a module-level promise chain: a second call always waits for
- * the in-flight run to finish its full unregister/dispose/register cycle, so
- * concurrent reloads can never register plugins against a disposed context.
+ * Queue load requests so two reloads cannot dispose/register the same context
+ * concurrently. A failed run is caught on the queue so a later run can proceed.
  */
 let loadChain: Promise<void> = Promise.resolve();
 
+/**
+ * Public entry point. Queue the load and return this run's promise to the caller.
+ */
 export function loadObsidianPlugins(
   app: Omit<AppHandle, "ui"> & { plugins: PluginManager },
   vault: Vault,
@@ -185,35 +199,28 @@ export function loadObsidianPlugins(
   return run;
 }
 
+// -------------------- Main load orchestration --------------------
+
+/** Discover plugins, prepare compatibility globals, load each plugin, and report results. */
 async function runLoad(
   app: Omit<AppHandle, "ui"> & { plugins: PluginManager },
   vault: Vault,
 ): Promise<void> {
   const plugins = app.plugins;
 
+  // Install DOM additions expected by legacy Obsidian plugins before their code runs.
   installDomAugmentation();
 
-  // suite plugins (nldates, calendar) consume moment exclusively via the
-  // global — expose it BEFORE any main.js evaluates (desktop and browser/
-  // fixture paths both come through here). Never overwrite an existing one.
+  // Share Geode's Moment instance with plugins; do not overwrite an existing global.
   window.moment ??= moment;
 
-  // R261/R263: legacy CodeMirror 5 stub. Obsidian historically exposes the CM5 instance as
-  // window.CodeMirror; plugins that bundle a CM5 syntax mode register against it at load —
-  // Dataview's registerDataviewjsCodeHighlighting (defineMode/getMode), and Templater bundles
-  // the CM5 JavaScript mode (defineMode + defineMIME + registerHelper at module eval). Geode is
-  // CM6-only (no legacy editor), so these modes are never actually run — a no-op surface lets
-  // such plugins LOAD (their real rendering goes via the CM6/markdown path). Only the members
-  // Templater/Dataview actually call are provided; the mode tokenizer (which would touch
-  // StringStream/Pos) never runs, since the no-op defineMode never invokes its factory.
+  // Obsidian historically exposed CodeMirror 5 globally. Geode uses CodeMirror 6,
+  // so provide only the small no-op surface observed by older plugins at load time.
+  // The "null" mode name lets compatible plugins detect that no syntax mode exists.
   (window as { CodeMirror?: unknown }).CodeMirror ??= {
     defineMode: () => undefined,
     defineMIME: () => undefined,
     registerHelper: () => undefined,
-    // CM5's "mode not found" sentinel is a mode NAMED "null" — plugins (Templater) check
-    // `getMode(...).name === "null"` and gracefully skip building a syntax mode, instead of
-    // wrapping it in a CM6 StreamLanguage that would crash the editor. The advancing token is
-    // belt-and-suspenders: if a plugin builds a StreamLanguage from it anyway, it won't stall.
     getMode: () => ({
       name: "null",
       startState: () => ({}),
@@ -226,25 +233,17 @@ async function runLoad(
     }),
   };
 
-  // B3③ (R165): Node-targeting plugin bundles (obsidian-git etc.) reference the
-  // Node global `global` as a free variable and crash with "Can't find variable:
-  // global" when main.js evaluates. Point it at globalThis so the lookup resolves
-  // — idempotent (??=), never clobbers a real one. (Unrelated to window.moment
-  // above, which is the *moment* global.) process/Buffer are intentionally NOT
-  // shimmed: `typeof process` branches in bundles would silently change behavior.
+  // Some Node-targeted bundles reference the Node `global` name in the WebView.
+  // Point it at globalThis when absent, without replacing an existing value.
   (globalThis as { global?: unknown }).global ??= globalThis;
-
-  // idempotent: unload the previous round first (does NOT persist enabled:false)
+  // Unregister the previous plugin set and dispose its context before rebuilding it.
   for (const id of loadedIds.splice(0)) plugins.unregister(id);
   previousContext?.dispose();
   resetGaps(); // warn-once + report state is per load
   const ctx = (previousContext = createCompatContext(app, plugins, vault));
-
-  // F5: real Obsidian exposes the App instance as window.app — plugins read it
-  // outside their onload args. Plain assignment (NOT ??=): every reload must
-  // point at the NEW context's App shim, before any plugin main.js evaluates.
   window.app = ctx.app;
 
+  // Ask the active vault adapter for installed Obsidian community plugins.
   let sources: ObsidianPluginSource[] = [];
   try {
     sources = await vault.adapter.listObsidianPlugins();
@@ -252,43 +251,43 @@ async function runLoad(
     console.error("[obsidian-compat] failed to list obsidian plugins", err);
   }
 
-  // browser E2E surface: ?obsfixture=1 injects the built-in fixture plugin
+  // A query flag enables the built-in fixture plugin for compatibility testing only.
   const fixtureRequested =
     typeof location !== "undefined" && /[?&]obsfixture=1/.test(location.search);
   if (fixtureRequested && !sources.some((s) => s.dir === FIXTURE_PLUGIN.dir)) {
     sources = [...sources, FIXTURE_PLUGIN];
   }
 
+  // Load the saved enabled state once, then collect one report entry per source.
   const enabledIds = await readEnabledIds(vault);
   const seenIds = new Set<string>();
   const report: ObsidianPluginReport[] = [];
 
+  // Load sequentially so plugin registration and shared-context side effects are ordered.
   for (const source of sources) {
     const entry = await loadOne(source);
     report.push(entry);
   }
 
-  // CREATE-ON-LOAD replay (API-REFERENCE area 2): real Obsidian fires vault
-  // 'create' for every existing file when the vault loads. Replay it now that
-  // plugins have registered their handlers; onLayoutReady callbacks queued
-  // during the plugin loop flush AFTER the replay (the documented opt-out).
+  // Publish existing files to the vault event system after plugins have registered.
   for (const f of ctx.registry.allLoadedFiles()) {
     if (f !== ctx.registry.root) ctx.vault.trigger("create", f);
   }
   ctx.workspace._flushLayoutReady();
 
-  // initial 'resolved' (fires once after vault-wide resolution): if the core
-  // index finished before plugin load, deliver it now; otherwise the pending
-  // metadata:updated will trigger it through the context handler.
   if (app.metadata.revision.get() > 0) ctx.metadataCache.trigger("resolved");
 
+  // Publish and log a single summary after the entire load attempt finishes.
   obsidianLoadReport.set(report);
   logReport(report);
-
-  /* ---------------- per-plugin pipeline (failures isolate) ---------------- */
-
+  // -------------------- Load and register one plugin --------------------
+  /**
+   * Validate one plugin's manifest and entry point, wrap its lifecycle in a
+   * GeodePlugin record, then register it with the host manager. Errors are
+   * returned as this plugin's report entry so one bad plugin does not stop the list.
+   */
   async function loadOne(source: ObsidianPluginSource): Promise<ObsidianPluginReport> {
-    /* 1. manifest */
+    // 1. Parse and validate required manifest fields before executing plugin code.
     let raw: RawManifest;
     try {
       raw = JSON.parse(source.manifestJson) as RawManifest;
@@ -311,8 +310,6 @@ async function runLoad(
     if (source.dir !== id) {
       console.warn(`[obsidian-compat] folder "${source.dir}" does not match manifest id "${id}"`);
     }
-    // contract: missing id/name/version rejects; OTHER gaps warn (never block —
-    // absent minAppVersion in particular must not reject)
     const missing = (["author", "minAppVersion", "description"] as const).filter(
       (k) => !isNonEmptyString(raw[k]),
     );
@@ -321,6 +318,7 @@ async function runLoad(
         `[obsidian-compat] ${id}: manifest missing ${missing.join(", ")} — defaulting to ""`,
       );
     }
+    // A newer minAppVersion is reported as a warning, not a hard rejection.
     let minAppWarning: string | undefined;
     if (isNonEmptyString(raw.minAppVersion) && semverCompare(raw.minAppVersion, apiVersion) > 0) {
       minAppWarning = `requires app ${raw.minAppVersion} (Geode reports ${apiVersion})`;
@@ -331,6 +329,7 @@ async function runLoad(
       return { id, status: "skipped", detail: "id collision with a host plugin" };
     }
 
+    // Fill optional manifest fields with defaults and normalize the vault-relative path.
     const manifest: PluginManifest = {
       author: "",
       minAppVersion: "",
@@ -342,7 +341,8 @@ async function runLoad(
       dir: `.obsidian/plugins/${source.dir}`,
     };
 
-    /* 2. evaluate main.js as CommonJS and resolve the constructor */
+    // Evaluate main.js as CommonJS-like code. This supplies a restricted require map,
+    // but `new Function` is not a security sandbox: plugin code still runs in the WebView.
     let ctor: new (app: obsidianModule.App, manifest: PluginManifest) => ObsidianPlugin;
     try {
       const moduleObj: { exports: unknown } = { exports: {} };
@@ -353,6 +353,7 @@ async function runLoad(
         `${source.mainJs}\n//# sourceURL=obsidian:${id}`,
       ) as (require: (id: string) => unknown, module: { exports: unknown }, exports: unknown) => void;
       run(hostRequire, moduleObj, moduleObj.exports);
+      // Support both common bundle styles: `exports.default = Plugin` and `module.exports = Plugin`.
       const exported = moduleObj.exports as { default?: unknown } | null;
       const candidate =
         typeof exported?.default === "function" ? exported.default : moduleObj.exports;
@@ -370,18 +371,21 @@ async function runLoad(
       };
     }
 
-    /* 3. wrap as a GeodePlugin (instance created lazily on each enable) */
+    // Keep runtime resources with this wrapper so they can be released on unload/failure.
     let instance: ObsidianPlugin | null = null;
     let styleEl: HTMLStyleElement | null = null;
+    // Remove only the stylesheet injected for this plugin; repeated calls are safe.
     const removeStyles = (): void => {
       styleEl?.remove();
       styleEl = null;
     };
+    // Adapt the Obsidian plugin lifecycle to the host's GeodePlugin interface.
     const wrapper: GeodePlugin = {
       id,
       name: manifest.name,
       description: manifest.description || undefined,
       version: manifest.version,
+      // Inject the plugin CSS, construct its API instance, and hydrate its components.
       onload: async () => {
         if (source.stylesCss) {
           styleEl = document.createElement("style");
@@ -396,8 +400,8 @@ async function runLoad(
           }
           await loadComponentAsync(instance);
         } catch (err) {
-          // unload the partially-loaded Component: commands, DOM listeners,
-          // intervals and event refs registered before the throw must not leak
+          // If startup fails partway through, attempt plugin cleanup before propagating
+          // the error to PluginManager; also remove injected CSS and discard the instance.
           try {
             if (instance && typeof (instance as { unload?: unknown }).unload === "function") {
               instance.unload();
@@ -413,6 +417,7 @@ async function runLoad(
           throw err;
         }
       },
+      // Always release the instance and its stylesheet, even if plugin unload throws.
       onunload: () => {
         try {
           instance?.unload();
@@ -421,16 +426,15 @@ async function runLoad(
           removeStyles();
         }
       },
-      // F3: forward the host's explicit-user-enable signal to the obsidian
-      // Plugin instance (optional calls — no dependency on core's new typing)
       onUserEnable: () => {
         instance?.onUserEnable?.();
       },
     };
 
-    /* 4. register; enabled mirrors community-plugins.json (fixture opts in) */
+    // Fixture plugins are enabled only when explicitly requested; real plugins follow saved state.
     const enabled = enabledIds.includes(id) || (fixtureRequested && id === FIXTURE_PLUGIN_ID);
     try {
+      // Register the adapter with its original directory name, which may differ from manifest.id.
       await plugins.register(wrapper, "obsidian", {
         enabled,
         persistEnabled: (on) => persistEnabledId(vault, id, on),
@@ -446,9 +450,8 @@ async function runLoad(
         ...(minAppWarning ? { minAppWarning } : {}),
       };
     }
+    // Registration can resolve without throwing even when onload fails; check the manager's state.
     if (enabled && !plugins.isEnabled(id)) {
-      // PluginManager caught the onload failure — surface the captured reason
-      // (R258: getLastError carries the real message, not just "see error above")
       return {
         id,
         status: "failed",
@@ -464,7 +467,9 @@ async function runLoad(
   }
 }
 
-/* ---------------- status report ---------------- */
+// -------------------- Status report and API-gap summary --------------------
+
+/** Log a compact summary of plugin outcomes and compatibility APIs used. */
 
 function logReport(report: ObsidianPluginReport[]): void {
   const gaps = drainGaps();
